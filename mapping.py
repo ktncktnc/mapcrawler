@@ -7,7 +7,9 @@
 import io
 import math
 import json
-import urllib2
+import urllib
+import urllib.parse
+import urllib.request
 import os, sys
 import argparse
 import time
@@ -34,7 +36,9 @@ def latlon2xy(z,lat,lon, patch_based=True):
 def get_cities_by_country(country_names, save_file=None):
 
     api_entry = 'http://overpass-api.de/api/interpreter?'
-    overpass_query = '{0}data=[out:json];area[name="{1}"];(node[place="city"](area););out;'.format(api_entry, urllib2.quote(country_names))
+    overpass_query = '{0}data=[out:json];area[name="{1}"];(node[place="city"](area););out;'\
+        .format(api_entry, urllib.parse.quote(country_names))
+
     r = requests.get(overpass_query)
     if r.status_code == 200:
         data = json.loads(r.text)['elements']
@@ -62,7 +66,9 @@ def get_bbox_by_city(city_name, country, verify_lat=None, verify_lon=None, epsil
         The bounding box format [south_lat, north_lat, west_long, east_long]
     '''
     api_entry = 'http://nominatim.openstreetmap.org/search?'
-    osm_query = '{0}city={1}&country={2}&format=json'.format(api_entry, urllib2.quote(city_name), urllib2.quote(country))
+    osm_query = '{0}city={1}&country={2}&format=json'\
+        .format(api_entry, urllib.parse.quote(city_name), urllib.parse.quote(country))
+
     r = requests.get(osm_query)
     if r.status_code == 200:
         data = json.loads(r.text)
@@ -98,7 +104,7 @@ def gen_bbox_cities_by_country(country, save_file=None):
 
     cities = get_cities_by_country(country)
     if cities is not None:
-        for city, pos in cities.iteritems():
+        for city, pos in cities.items():
             bbox = get_bbox_by_city(city.encode('utf8'), country.encode('utf8'), *pos)
             if bbox is not None:
                 bboxes[city] = bbox
@@ -109,7 +115,7 @@ def gen_bbox_cities_by_country(country, save_file=None):
 
         if save_file is not None:
             with open(save_file, 'wt') as fout:
-                for city, bb in bboxes.iteritems():
+                for city, bb in bboxes.items():
                     pos = locations[city]
                     # print pos
                     # print bb
@@ -187,9 +193,9 @@ class EarthMapper(object):
 
         samples, w, h = self.sampling(bbox)
         if w*h == 0:
-            print 'Invalid bounding box or sampling'
+            print('Invalid bounding box or sampling')
             return
-        print len(samples), ',', w, ',', h
+        print(str(len(samples)) + ',' +  str(w) + ',' + str(h))
         self.download_tiles(samples, location_name)
         self.stitching(w, h, location_name)
 
@@ -234,7 +240,6 @@ class EarthMapper(object):
         return (lat_south, lat_north, lon_west, lon_east)
 
     def download_tiles(self, samples, location_name):
-
         user_agent = 'Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10_6_8; de-at) AppleWebKit/533.21.1 (KHTML, like Gecko) Version/5.0.5 Safari/533.21.1'
         headers = { 'User-Agent' : user_agent }
 
@@ -242,28 +247,28 @@ class EarthMapper(object):
         i = 0
         for lat, lon in samples:
             url = self.get_url(lat, lon)
-            filename = os.path.join(self.directory, "tmp_%s_%d_%d.jpg" % (location_name.encode('utf-8'), self.zoom, i))
+            filename = os.path.join(self.directory, "tmp_%s_%d_%d.jpg" % (location_name, self.zoom, i))
             if os.path.isfile(filename):
                 continue
             i += 1
             if not os.path.exists(filename):
-                bytes = None
+                _bytes = None
                 try:
-                    req = urllib2.Request(url, data=None, headers=headers)
-                    response = urllib2.urlopen(req)
-                    bytes = response.read()
-                except Exception, e:
-                    print "--", url, "->", e
+                    req = urllib.request.Request(url, data=None, headers=headers)
+                    response = urllib.request.urlopen(req)
+                    _bytes = response.read()
+                except Exception as e:
+                    print("--" + str(url) + "->" + str(e))
                     pbar.finish()
                     return
 
-                if bytes.startswith("<html>"):
-                    print "-- forbidden", filename
-                    pbar.finish()
-                    return
+                # if _bytes.startswith("<html>"):
+                #     print("-- forbidden" + filename)
+                #     pbar.finish()
+                #     return
 
-                f = open(filename,'wb')
-                f.write(bytes)
+                f = open(filename, 'wb')
+                f.write(_bytes)
                 f.close()
 
                 time.sleep(1 + random.random())
@@ -276,12 +281,12 @@ class EarthMapper(object):
 
         result = Image.new("RGBA", (w, h))
 
-        for y in xrange(H):
-            for x in xrange(W):
+        for y in range(H):
+            for x in range(W):
                 filename = os.path.join(self.directory, "tmp_{0}_{1}_{2}.jpg".format(location_name.encode('utf-8'), self.zoom, y*W + x))
 
                 if not os.path.exists(filename):
-                    print "-- missing", filename
+                    print("-- missing" + filename)
                     continue
 
                 x_paste = x  * self.patch_size
@@ -289,8 +294,8 @@ class EarthMapper(object):
 
                 try:
                     i = Image.open(filename).crop((0, 30, self.patch_size, self.patch_size + 30))
-                except Exception, e:
-                    print "-- %s, removing %s" % (e, filename)
+                except Exception as e:
+                    print("-- %s, removing %s" % (e, filename))
                     trash_dst = os.path.expanduser("~/.Trash/%s" % filename)
                     os.rename(filename, trash_dst)
                     continue
@@ -356,8 +361,8 @@ class BingMaps(EarthMapper):
         height = int(round((bottom - top) / float(self.patch_size)))
 
         samples = []
-        for h in xrange(height):
-            for w in xrange(width):
+        for h in range(height):
+            for w in range(width):
                 y = top + (h + 0.5) * self.patch_size
                 x = left + (w + 0.5) * self.patch_size
                 lat, lon = self.image2world(x, y)
