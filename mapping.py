@@ -1,42 +1,49 @@
 #!/usr/bin/python
-'''
+"""
     This utility has functions helping obtaining longtitude and latitude
     bounding box of a city and then download the corresponding satellite
     map from Google Maps service.
-'''
+"""
+import argparse
 import io
-import math
 import json
+import logging
+import math
+import os
+import random
+import time
+import numpy as np
+import rasterio
+import rasterio.crs
+import rasterio.transform
+from rasterio.profiles import DefaultGTiffProfile
 import urllib
 import urllib.parse
 import urllib.request
-import os, sys
-import argparse
-import time
-import logging
-import random
+
 import requests
 from PIL import Image
 from progressbar import ProgressBar, SimpleProgress
 
-def latlon2px(z,lat,lon):
 
-    x = 2**z*(lon+180)/360*256
-    y = -(.5*math.log((1+math.sin(math.radians(lat)))/(1-math.sin(math.radians(lat))))/math.pi-1)*256*2**(z-1)
-    return x,y
+def latlon2px(z, lat, lon):
+    x = 2 ** z * (lon + 180) / 360 * 256
+    y = -(.5 * math.log(
+        (1 + math.sin(math.radians(lat))) / (1 - math.sin(math.radians(lat)))) / math.pi - 1) * 256 * 2 ** (z - 1)
+    return x, y
 
-def latlon2xy(z,lat,lon, patch_based=True):
 
-    x,y = latlon2px(z,lat,lon)
+def latlon2xy(z, lat, lon, patch_based=True):
+    x, y = latlon2px(z, lat, lon)
     if patch_based:
-        x = int(x/256)#,int(x%256)
-        y = int(y/256)#,int(y%256)
-    return x,y
+        x = int(x / 256)  # ,int(x%256)
+        y = int(y / 256)  # ,int(y%256)
+    return x, y
+
 
 def get_cities_by_country(country_names, save_file=None):
-
     api_entry = 'http://overpass-api.de/api/interpreter?'
-    overpass_query = '{0}data=[out:json];area[name="{1}"];(node[place="city"](area););out;'\
+    overpass_query = '{0}data=[out:json];area[name="{1}"];(node[place="city"](area););out;' \
         .format(api_entry, urllib.parse.quote(country_names))
 
     r = requests.get(overpass_query)
@@ -59,14 +66,14 @@ def get_cities_by_country(country_names, save_file=None):
         logging.error('Failed to query from OverPass API')
         return None
 
-def get_bbox_by_city(city_name, country, verify_lat=None, verify_lon=None, epsilon=1e-1):
 
-    '''
+def get_bbox_by_city(city_name, country, verify_lat=None, verify_lon=None, epsilon=1e-1):
+    """
         Nominatim API:
         The bounding box format [south_lat, north_lat, west_long, east_long]
-    '''
-    api_entry = 'http://nominatim.openstreetmap.org/search?'
-    osm_query = '{0}city={1}&country={2}&format=json'\
+    """
+    api_entry = 'https://nominatim.openstreetmap.org/search?'
+    osm_query = '{0}city={1}&country={2}&format=json' \
         .format(api_entry, urllib.parse.quote(city_name), urllib.parse.quote(country))
 
     r = requests.get(osm_query)
@@ -85,13 +92,14 @@ def get_bbox_by_city(city_name, country, verify_lat=None, verify_lon=None, epsil
                 lon = float(city['lon'])
                 if math.fabs(verify_lon - lon) < epsilon and math.fabs(verify_lat - lat) < epsilon:
                     return bbox
-            logging.error('Approximation check failed of city "{0}" against ({1}, {2})'.format(city, verify_lat, verify_lon))
+            logging.error(
+                'Approximation check failed of city "{0}" against ({1}, {2})'.format(city, verify_lat, verify_lon))
             return None
     else:
         return None
 
-def gen_bbox_cities_by_country(country, save_file=None):
 
+def gen_bbox_cities_by_country(country, save_file=None):
     locations = {}
     bboxes = {}
     if save_file is not None and os.path.isfile(save_file):
@@ -105,7 +113,7 @@ def gen_bbox_cities_by_country(country, save_file=None):
     cities = get_cities_by_country(country)
     if cities is not None:
         for city, pos in cities.items():
-            bbox = get_bbox_by_city(city.encode('utf8'), country.encode('utf8'), *pos)
+            bbox = get_bbox_by_city(city, country, *pos)
             if bbox is not None:
                 bboxes[city] = bbox
                 locations[city] = pos
@@ -119,12 +127,15 @@ def gen_bbox_cities_by_country(country, save_file=None):
                     pos = locations[city]
                     # print pos
                     # print bb
-                    fout.write('{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\n'.format(city.encode('utf8'), pos[0], pos[1], bb[0], bb[1], bb[2], bb[3]))
+                    fout.write(
+                        '{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\n'.format(city, pos[0], pos[1], bb[0], bb[1],
+                                                                     bb[2], bb[3]))
             logging.info('Bounding boxes of cities of "{0}" is saved to {1}'.format(country, save_file))
         return bboxes, locations
     else:
         logging.error('Cannot get city list from Overpass API')
         return None, None
+
 
 # def compute_tiling(bbox, zoom=19):
 #
@@ -192,12 +203,11 @@ class EarthMapper(object):
             bbox = self.define_bbox(location, max_image_size)
 
         samples, w, h = self.sampling(bbox)
-        if w*h == 0:
+        if w * h == 0:
             print('Invalid bounding box or sampling')
             return
-        print(str(len(samples)) + ',' +  str(w) + ',' + str(h))
         self.download_tiles(samples, location_name)
-        self.stitching(w, h, location_name)
+        self.stitching(w, h, bbox, location_name)
 
     def define_bbox(self, pos, size):
 
@@ -205,18 +215,18 @@ class EarthMapper(object):
         lat, lon = pos
         pos_x, pos_y = self.world2image(lat, lon)
 
-        lat_north, lon_west = self.image2world(pos_x - w/2, pos_y - h/2)
-        lat_south, lon_east = self.image2world(pos_x + w/2, pos_y + h/2)
+        lat_north, lon_west = self.image2world(pos_x - w / 2, pos_y - h / 2)
+        lat_south, lon_east = self.image2world(pos_x + w / 2, pos_y + h / 2)
 
-        return (lat_south, lat_north, lon_west, lon_east)
+        return lat_south, lat_north, lon_west, lon_east
 
     def shrink_bbox(self, pos, bbox, size):
-        '''
+        """
         Given a bounding box, interpolate an inner bounding box such that
         the corresponding satellite image has size less or equal 'size'
         This function exists because bounding boxes retrieved from OSM or GoogleMaps
         are rather larger than the real size of the urban area of a city.
-        '''
+        """
         h, w = size
         lat, lon = pos
         pos_x, pos_y = self.world2image(lat, lon)
@@ -225,8 +235,8 @@ class EarthMapper(object):
         min_x, min_y = self.world2image(lat_north, lon_west)
         max_x, max_y = self.world2image(lat_south, lon_east)
 
-        min_x, max_x = max(min_x, pos_x - w/2), min(max_x, pos_x + w/2)
-        min_y, max_y = max(min_y, pos_y - h/2), min(max_y, pos_y + h/2)
+        min_x, max_x = max(min_x, pos_x - w / 2), min(max_x, pos_x + w / 2)
+        min_y, max_y = max(min_y, pos_y - h / 2), min(max_y, pos_y + h / 2)
 
         lat_north, lon_west = self.image2world(min_x, min_y)
         lat_south, lon_east = self.image2world(max_x, max_y)
@@ -237,11 +247,12 @@ class EarthMapper(object):
         # lat_south = lat - (pos_y - min_y) * self.latitude_per_pixel()
         # lat_north = lat + (max_y - pos_y) * self.latitude_per_pixel()
 
-        return (lat_south, lat_north, lon_west, lon_east)
+        return lat_south, lat_north, lon_west, lon_east
 
     def download_tiles(self, samples, location_name):
-        user_agent = 'Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10_6_8; de-at) AppleWebKit/533.21.1 (KHTML, like Gecko) Version/5.0.5 Safari/533.21.1'
-        headers = { 'User-Agent' : user_agent }
+        user_agent = 'Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10_6_8; de-at) AppleWebKit/533.21.1 (KHTML, ' \
+                     'like Gecko) Version/5.0.5 Safari/533.21.1 '
+        headers = {'User-Agent': user_agent}
 
         pbar = ProgressBar(widgets=[SimpleProgress(), ' patches downloaded'], maxval=len(samples)).start()
         i = 0
@@ -275,21 +286,33 @@ class EarthMapper(object):
                 pbar.update(i)
         pbar.finish()
 
-    def stitching(self, W, H, location_name):
-
+    def stitching(self, W, H, bbox, location_name):
+        filepath = os.path.join(self.directory, "map_{0}_z{1}.tif".format(location_name, self.zoom))
         w, h = W * self.patch_size, H * self.patch_size
 
-        result = Image.new("RGBA", (w, h))
+        crs = rasterio.crs.CRS({"init": "epsg:4326"})
+        geotransform = rasterio.transform.from_bounds(bbox[2], bbox[0], bbox[3], bbox[1], w, h)
+
+
+        profile = DefaultGTiffProfile()
+        profile['crs'] = crs
+        profile['transform'] = geotransform
+        profile['driver'] = 'GTiff'
+        profile['height'] = h
+        profile['width'] = w
+        profile['count'] = 3
+
+        result = Image.new("RGB", (w, h))
 
         for y in range(H):
             for x in range(W):
-                filename = os.path.join(self.directory, "tmp_{0}_{1}_{2}.jpg".format(location_name.encode('utf-8'), self.zoom, y*W + x))
+                filename = os.path.join(self.directory, "tmp_{0}_{1}_{2}.jpg".format(location_name, self.zoom, y * W + x))
 
                 if not os.path.exists(filename):
                     print("-- missing" + filename)
                     continue
 
-                x_paste = x  * self.patch_size
+                x_paste = x * self.patch_size
                 y_paste = y * self.patch_size
 
                 try:
@@ -304,7 +327,15 @@ class EarthMapper(object):
                 os.system(' '.join(['rm', filename]))
                 del i
 
-        result.save(os.path.join(self.directory, "map_{0}_z{1}.jpg".format(location_name.encode('utf-8'), self.zoom)))
+        img = np.array(result)
+        img = np.swapaxes(img, 0, 2)
+        img = np.swapaxes(img, 1, 2)
+
+        with rasterio.Env():
+            with rasterio.open(filepath, 'w', **profile) as src:
+                src.write(img)
+        #result.save()
+
 
 # class GoogleMaps(EarthMapper):
 #
@@ -313,10 +344,10 @@ class EarthMapper(object):
 #         return "http://mt1.google.com/vt/lyrs=h@162000000&hl=en&x=%d&s=&y=%d&z=%d" % (x, y, zoom)
 
 class BingMaps(EarthMapper):
-
     lat_limits = (-85.05112878, 85.05112878)
 
-    def __init__(self, zoom, directory, patch_size=256, apikey='Ao25vCxCKEsCjfto3hQYy6Kwvj6Bt35_RoCmLOhndF7YRnv0c982wfx5Wefm9a_S'):
+    def __init__(self, zoom, directory, patch_size=256,
+                 apikey='Ao25vCxCKEsCjfto3hQYy6Kwvj6Bt35_RoCmLOhndF7YRnv0c982wfx5Wefm9a_S'):
 
         self.patch_size = patch_size
         self.zoom = zoom
@@ -325,7 +356,7 @@ class BingMaps(EarthMapper):
 
     def world2image(self, lat, lon):
 
-        size = 256 * 2**self.zoom
+        size = 256 * 2 ** self.zoom
         sin_lat = math.sin(math.radians(lat))
         x = ((lon + 180.0) / 360.0) * size
         y = (0.5 - math.log((1.0 + sin_lat) / (1.0 - sin_lat)) / (4 * math.pi)) * size
@@ -333,7 +364,7 @@ class BingMaps(EarthMapper):
 
     def image2world(self, x, y):
 
-        size = float(256 * 2**self.zoom)
+        size = float(256 * 2 ** self.zoom)
         Z = math.exp(4 * math.pi * (0.5 - float(y) / size))
         lat = -math.degrees(math.asin((1.0 - Z) / (1.0 + Z)))
         # if y > size/2: # below Equator
@@ -345,11 +376,11 @@ class BingMaps(EarthMapper):
 
     def latitude_per_pixel(self):
 
-        return 2*self.lat_limits[1] / (256 * float(2**self.zoom))
+        return 2 * self.lat_limits[1] / (256 * float(2 ** self.zoom))
 
     def longtitude_per_pixel(self):
 
-        return 360.0 / (256 * float(2**self.zoom))
+        return 360.0 / (256 * float(2 ** self.zoom))
 
     def sampling(self, bbox):
 
@@ -372,10 +403,14 @@ class BingMaps(EarthMapper):
 
     def get_url(self, lat, lon):
 
-        return 'http://dev.virtualearth.net/REST/v1/Imagery/Map/Aerial/{0},{1}/{2}?mapSize={3},{4}&key={5}'.format(lat, lon, self.zoom, self.patch_size, self.patch_size+60, self.apikey)
+        return 'https://dev.virtualearth.net/REST/v1/Imagery/Map/Aerial/{0},{1}/{2}?mapSize={3},{4}&key={5}'.format(lat,
+                                                                                                                   lon,
+                                                                                                                   self.zoom,
+                                                                                                                   self.patch_size,                                                                                                            self.patch_size + 60,
+                                                                                                                   self.apikey)
+
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(description='Download tiled satellite image from Google Maps')
     parser.add_argument('latitude_start', type=float, help='Start latitude value')
     parser.add_argument('longtitude_start', type=float, help='Start longtitude value')
@@ -387,4 +422,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     download_tiles(args.zoom, args.latitude_start, args.latitude_stop,
-                    args.longtitude_start, args.longtitude_stop, satellite=True, location_name=args.location_name)
+                   args.longtitude_start, args.longtitude_stop, satellite=True, location_name=args.location_name)
